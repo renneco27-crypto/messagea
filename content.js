@@ -15,7 +15,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-logDebug('🤖 Bot loaded on Messenger');
+logDebug('🤖 Bot script loaded on Messenger');
 
 // Watch for DOM changes
 const observer = new MutationObserver(() => {
@@ -35,115 +35,147 @@ setInterval(() => {
   checkForNewMessages();
 }, 1000);
 
+setTimeout(() => {
+  logDebug('Bot ready - monitoring all message types');
+}, 2000);
+
 function checkForNewMessages() {
   if (isTyping) return;
   
   try {
-    // Target specific Messenger message elements
-    // These are the actual message bubbles from other users
-    const messageElements = document.querySelectorAll('div[role="article"][aria-roledescription="message"]');
+    // Look for incoming message bubbles - these have aria-roledescription="message"
+    // and are inside role="article" containers
+    const messageContainers = document.querySelectorAll('div[role="article"][aria-label*="message"]');
     
-    if (messageElements.length === 0) {
-      // Fallback: try to find message content
-      const fallbackElements = document.querySelectorAll('div[aria-label*="message"][role="button"]');
-      processElements(fallbackElements);
+    if (messageContainers.length > 0) {
+      logDebug('🔍 Found ' + messageContainers.length + ' message containers');
+      
+      // Process each message container
+      messageContainers.forEach(container => {
+        const ariaLabel = container.getAttribute('aria-label') || '';
+        const messageId = container.getAttribute('data-message-id') || ariaLabel + container.offsetTop;
+        
+        // Skip if we've already processed this message
+        if (processedMessages.has(messageId)) return;
+        processedMessages.add(messageId);
+        
+        // Extract the message text from aria-label
+        // Format: "At 7:04 PM, Lawrence: Happy birthday"
+        let messageText = ariaLabel;
+        
+        // Remove timestamp and sender prefix to get just the message
+        messageText = messageText
+          .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM|am|pm)?\s*(,\s*)?[^:]*:\s*/i, '')
+          .trim();
+        
+        logDebug('📨 Message: "' + messageText + '" (from: "' + ariaLabel.substring(0, 30) + '")');
+        
+        // Skip empty messages
+        if (messageText.length < 2) return;
+        
+        // Skip system/UI messages
+        const skipTexts = ['message sent', 'what do you mean', 'message actions', 'loading'];
+        if (skipTexts.some(text => messageText.toLowerCase().includes(text))) return;
+        
+        handleTrigger(messageText);
+      });
+      
       return;
     }
     
-    processElements(messageElements);
-    
-  } catch (error) {
-    logDebug('Scan error: ' + error.message.substring(0, 100));
-  }
-}
-
-function processElements(elements) {
-  const recentElements = Array.from(elements).slice(-10);
-  
-  recentElements.forEach(el => {
-    // Extract text content
-    const textContent = el.textContent.trim();
-    if (!textContent || textContent.length < 3) return;
-    
-    // Get aria-label for additional context
-    const ariaLabel = el.getAttribute('aria-label') || '';
-    
-    // Skip UI/system elements
-    const skipTexts = [
-      'press enter', 'send', 'emoji', 'sticker', 'attach', 'reply',
-      'message sent', 'what do you mean', 'message actions',
-      'type a message', 'click to open', 'notifications',
-      'type to search', 'online', 'active', 'typing',
-      'settings', 'info', 'call', 'video', 'gif', 'photo', 'like',
-      'write to', 'compose', 'open more', 'choose',
-      'messages_table', 'sent,'
-    ];
-    
-    const combinedText = (textContent + ' ' + ariaLabel).toLowerCase();
-    if (skipTexts.some(text => combinedText.includes(text))) return;
-    
-    // Skip timestamps
-    if (textContent.match(/^\d{1,2}:\d{2}\s*(AM|PM|am|pm)/)) return;
-    
-    // Skip our own messages
-    if (lastSentMessage && textContent.includes(lastSentMessage)) return;
-    
-    // Skip message previews from our own replies
-    const ourReplyPreview = '🔍 Checking triggers for:';
-    if (textContent.includes(ourReplyPreview)) return;
-    
-    // Create unique ID
-    const messageId = textContent + el.offsetTop + el.offsetLeft;
-    
-    if (!processedMessages.has(messageId)) {
-      processedMessages.add(messageId);
+    // Fallback: look for spans with lexical text (typing animation areas)
+    const lexicalSpans = document.querySelectorAll('span[data-lexical-text="true"]');
+    if (lexicalSpans.length > 0) {
+      logDebug('🔍 Fallback: Found ' + lexicalSpans.length + ' lexical spans');
       
-      // Clean timestamp prefix
-      let cleanText = textContent
-        .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\s*(,\s*)?[^:]*:\s*/i, '')
-        .trim();
+      const latestSpan = lexicalSpans[lexicalSpans.length - 1];
+      const text = latestSpan.textContent.trim();
       
-      if (cleanText.length >= 3) {
-        logDebug('📩 New message: "' + cleanText + '"');
-        handleTrigger(cleanText);
+      if (text.length >= 2 && text.length < 200) {
+        const messageId = 'lexical_' + text + latestSpan.offsetTop;
+        if (!processedMessages.has(messageId)) {
+          processedMessages.add(messageId);
+          
+          // Skip UI phrases
+          const skipPhrases = ['send', 'emoji', 'sticker', 'attach', 'press enter', 'aa'];
+          const lowerText = text.toLowerCase();
+          if (!skipPhrases.some(phrase => lowerText.includes(phrase))) {
+            logDebug('📝 Lexical span: "' + text + '"');
+            handleTrigger(text);
+          }
+        }
       }
     }
-  });
-  
-  if (processedMessages.size > 100) {
-    processedMessages.clear();
+    
+    // Cleanup old entries
+    if (processedMessages.size > 100) {
+      processedMessages.clear();
+    }
+    
+  } catch (error) {
+    logDebug('⚠️ Scan error: ' + error.message.substring(0, 100));
   }
 }
 
 function handleTrigger(messageText) {
   const lowerText = messageText.toLowerCase().trim();
+  
   logDebug('🔍 Checking triggers for: "' + lowerText + '"');
   
-  // Birthday trigger
-  if (lowerText.includes('happy birthday')) {
-    logDebug('🎂 Trigger matched - replying');
+  // Birthday trigger - respond to any message containing "birthday"
+  if (lowerText.includes('birthday')) {
+    logDebug('🎂 Birthday trigger matched!');
     lastSentMessage = '🎉 Happy Birthday! Have a great day!';
     sendAutoReply(lastSentMessage);
     return;
   }
   
-  logDebug('❌ No match for: ' + lowerText);
+  logDebug('❌ No trigger match found');
 }
 
 function findInputBox() {
-  return (
-    document.querySelector('div[aria-label*="Write"][contenteditable="true"][role="textbox"][data-lexical-editor="true"]') ||
-    document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-    document.querySelector('div[data-lexical-editor="true"][contenteditable="true"]')
-  );
+  // Target the exact input div from your provided HTML
+  const inputSelectors = [
+    'div[aria-label*="Write"][contenteditable="true"][role="textbox"][data-lexical-editor="true"]',
+    'div[contenteditable="true"][role="textbox"][aria-label*="Write"]',
+    'div[contenteditable="true"][role="textbox"]',
+    'div[data-lexical-editor="true"][contenteditable="true"]',
+    'div[contenteditable="true"][data-placeholder="Aa"]',
+    'textarea[aria-label*="Write"], input[aria-label*="Write"]'
+  ];
+  
+  for (const selector of inputSelectors) {
+    const el = document.querySelector(selector);
+    if (el) {
+      return el;
+    }
+  }
+  
+  return null;
 }
 
 function findSendButton() {
-  return (
-    document.querySelector('div[data-testid="send-button"]') ||
-    document.querySelector('button[aria-label="Send"]') ||
-    document.querySelector('i[data-testid="send-message-icon"]')
-  );
+  // Based on your HTML, the send button is likely identified by these attributes
+  const selectors = [
+    'div[data-testid="send-button"]',
+    'button[aria-label="Send"]',
+    'button[type="submit"]',
+    'div[aria-label="Send"][role="button"]',
+    'svg[data-testid="send-message-icon"]'
+  ];
+  
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el) {
+      // For SVGs, find parent button
+      if (el.tagName === 'svg') {
+        return el.closest('button') || el.parentElement;
+      }
+      return el;
+    }
+  }
+  
+  return null;
 }
 
 function simulateTyping(text, callback) {
@@ -156,7 +188,7 @@ function simulateTyping(text, callback) {
     return;
   }
 
-  logDebug('⌨️ Typing response...');
+  logDebug('⌨️ Found input box - focusing and typing...');
   inputBox.focus();
 
   // Clear existing content
@@ -170,45 +202,58 @@ function simulateTyping(text, callback) {
       i++;
     } else {
       clearInterval(interval);
-      logDebug('✅ Done typing');
+      logDebug('✅ Typing complete');
       isTyping = false;
       if (callback) callback();
     }
-  }, 150 + Math.random() * 300);
+  }, 150 + Math.random() * 400); // Variable typing speed
 }
 
 function sendAutoReply(responseText) {
-  logDebug('📤 Sending reply...');
+  logDebug('📤 Preparing to reply: ' + responseText.substring(0, 50));
+  
   simulateTyping(responseText, () => {
     let sent = false;
     
+    // Try send button first
     const sendButton = findSendButton();
     if (sendButton) {
-      sendButton.click();
-      logDebug('✅ Sent!');
-      sent = true;
-    }
-    
-    if (!sent) {
-      const inputBox = findInputBox();
-      if (inputBox) {
-        const enterEvent = new KeyboardEvent('keydown', {
-          key: 'Enter',
-          code: 'Enter',
-          bubbles: true
-        });
-        inputBox.dispatchEvent(enterEvent);
-        logDebug('✅ Sent via Enter');
+      try {
+        sendButton.click();
+        logDebug('✅ Reply sent successfully!');
         sent = true;
+      } catch (e) {
+        logDebug('⚠️ Send button click failed, trying Enter');
       }
     }
     
-    if (!sent) logDebug('❌ Failed to send!');
+    // Fallback: Try Enter key
+    if (!sent) {
+      const inputBox = findInputBox();
+      if (inputBox) {
+        try {
+          const enterEvent = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            bubbles: true
+          });
+          inputBox.dispatchEvent(enterEvent);
+          logDebug('✅ Reply sent via Enter key');
+          sent = true;
+        } catch (e) {
+          logDebug('❌ Failed to send via Enter');
+        }
+      }
+    }
     
-    // Cooldown
+    if (!sent) {
+      logDebug('❌ All send methods failed!');
+    }
+    
+    // Cooldown period
     setTimeout(() => {
       isTyping = false;
-    }, 1500);
+    }, 2000);
   });
 }
 
@@ -217,6 +262,6 @@ function logDebug(msg) {
   try {
     chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
   } catch (e) {
-    // Silent fail
+    // Silent fail when extension context is invalidated
   }
 }
