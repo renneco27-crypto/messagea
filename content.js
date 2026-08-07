@@ -1,28 +1,10 @@
 let processedMessages = new Set();
-let botStartTime = Date.now();
-let isTyping = false;
 let lastSentMessage = '';
-
-// Respond to ping from popup
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === "PING") {
-    try {
-      sendResponse({botReady: true});
-    } catch (e) {
-      // Ignore if context invalidated
-    }
-    return true;
-  }
-});
+let myUserId = null;
 
 logDebug('Bot script loaded on Messenger');
 
-// Continuous message watching - every 1 second
-const scanInterval = setInterval(() => {
-  checkForNewMessages();
-}, 1000);
-
-// Also use MutationObserver for immediate detection
+// Watch for DOM changes
 const observer = new MutationObserver(() => {
   checkForNewMessages();
 });
@@ -36,153 +18,125 @@ if (document.body) {
   });
 }
 
+// Also scan periodically
+const scanInterval = setInterval(() => {
+  checkForNewMessages();
+}, 1000);
+
 setTimeout(() => {
-  logDebug('Bot ready - scanning for messages every 1s');
+  logDebug('Bot ready - monitoring started');
 }, 2000);
 
 function checkForNewMessages() {
-  // Prevent multiple checks if already typing
-  if (isTyping) return;
-  
   try {
-    // Find actual chat message bubbles - NOT UI buttons or labels
-    const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
+    // Find message content spans - these contain actual text
+    const messageSpans = document.querySelectorAll('span[data-lexical-text="true"]');
     
-    let newMessages = [];
-    
-    candidates.forEach(el => {
-      let text = el.textContent.trim();
-      if (text.length === 0 || text.length > 200) return;
-      
-      // Skip our own messages to prevent feedback loop
-      if (text === lastSentMessage || text.includes(lastSentMessage.substring(0, 20))) {
-        return;
-      }
-      
-      // Additional check: look for outgoing message indicators
-      const isInOutgoingBubble = el.closest('[data-testid="message-content"]')?.parentElement?.className?.includes('outgoing') ||
-                                el.closest('[data-testid="MessageGroupOutgoing"]') ||
-                                el.closest('.message-out');
-      
-      if (isInOutgoingBubble) {
-        return; // Skip our own outgoing messages
-      }
-      
-      // Clean up message text - remove timestamp patterns
-      let messageContent = text
-        .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)\s*(,\s*)?/i, '')
-        .replace(/\s*(PM|AM)\s*(by\s+)?\w+:\s*/i, '')
-        .trim();
-      
-      // Skip empty, UI elements, and system messages
-      const lowerText = messageContent.toLowerCase();
-      
-      // Comprehensive list of UI/system phrases to skip
-      const skipPhrases = [
-        'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
-        'aa', 'reply to', 'message sent', 'what do you mean',
-        'settings', 'info', 'call', 'video', 'gif', 'photo', 'like',
-        'enter', 'message', 'type a message', 'click to open',
-        'notifications', 'privacy', 'groups', 'friends', 'memories',
-        'watch', 'marketplace', 'gaming', 'pages', 'logout'
-      ];
-      
-      // Skip if contains UI phrases
-      if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
-      
-      // Skip if still empty or too short
-      if (messageContent.length < 3) return;
-      
-      // Only accept messages that look like actual user text
-      newMessages.push({text: messageContent, id: text});
-    });
-    
-    // Process only the latest new messages (last 3)
-    for (let i = newMessages.length - 1; i >= 0 && (newMessages.length - i) <= 3; i--) {
-      const msg = newMessages[i];
-      if (!processedMessages.has(msg.id)) {
-        processedMessages.add(msg.id);
-        logDebug('Message detected: "' + msg.text + '"');
-        handleTrigger(msg.text);
-      }
+    if (messageSpans.length === 0) {
+      return;
     }
     
-    // Cleanup old entries
-    if (processedMessages.size > 50) {
-      processedMessages.clear();
+    // Get the most recent message
+    const latestSpan = messageSpans[messageSpans.length - 1];
+    const messageText = latestSpan.textContent.trim();
+    
+    if (!messageText || messageText.length < 3) return;
+    
+    // Filter out system/UI text
+    const skipPhrases = [
+      'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
+      'aa', 'reply to', 'message sent', 'what do you mean',
+      'type a message', 'click to open', 'notifications', 'type to search',
+      'online', 'active now', 'active today'
+    ];
+    
+    const lowerText = messageText.toLowerCase();
+    if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
+    
+    // Skip if this looks like it's our sent message or UI
+    if (messageText === lastSentMessage || 
+        messageText.includes('typing') ||
+        messageText === 'Aa') return;
+    
+    // Create unique ID based on text content and timestamp
+    const messageId = messageText + Date.now();
+    
+    // Only process if we haven't seen this message recently
+    if (!processedMessages.has(messageText)) {
+      processedMessages.add(messageText);
+      logDebug('Message: "' + messageText + '"');
+      handleTrigger(messageText);
+      
+      // Clean old entries
+      if (processedMessages.size > 100) {
+        processedMessages.clear();
+      }
     }
     
   } catch (error) {
-    logDebug('Scan error: ' + error.message.substring(0, 100));
-  }
-}
-
-function logDebug(msg) {
-  console.log('[School GC Bot] ' + msg);
-  try {
-    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
-  } catch (e) {
-    // Silently fail when extension context is invalidated
+    // Silent fail
   }
 }
 
 function handleTrigger(messageText) {
   const lowerText = messageText.toLowerCase().trim();
   
-  logDebug('Checking trigger for: "' + lowerText + '"');
+  // Trigger on partial or full match (>=2 words matched)
+  const triggers = [
+    { pattern: 'happy birthday', response: '🎉 Happy Birthday! Have a great day!', threshold: 0.5 },
+    { pattern: 'hello', response: '👋 Hey there!', threshold: 1.0 },
+    { pattern: 'hi', response: '👋 Hello!', threshold: 1.0 },
+    { pattern: 'class today', response: 'Checking... Please wait.', threshold: 1.0 }
+  ];
   
-  // Check if message contains "happy birthday" anywhere
-  if (lowerText.includes('happy birthday')) {
-    logDebug('Trigger matched - replying');
-    const reply = '🎉 Happy Birthday! Have a great day!';
-    lastSentMessage = reply;
-    sendAutoReply(reply);
-    return;
+  for (const trigger of triggers) {
+    const patternWords = trigger.pattern.split(' ');
+    const messageWords = lowerText.split(' ');
+    
+    let matchCount = 0;
+    for (const pWord of patternWords) {
+      if (messageWords.some(mWord => mWord.includes(pWord))) {
+        matchCount++;
+      }
+    }
+    
+    const matchRatio = matchCount / patternWords.length;
+    
+    if (matchRatio >= trigger.threshold) {
+      logDebug('Trigger matched! (' + matchRatio + ')');
+      sendAutoReply(trigger.response);
+      return;
+    }
   }
   
   logDebug('No trigger match for: ' + lowerText);
 }
 
 function findInputBox() {
-  // Multiple selectors for different Messenger versions
   return (
-    // Lexical editor (newer Messenger)
-    document.querySelector('div[data-lexical-editor="true"][contenteditable="true"][aria-label*="Write"]') ||
-    // Standard contenteditable with aria-label
-    document.querySelector('div[contenteditable="true"][role="textbox"][aria-label*="Write"]') ||
-    // Generic contenteditable textbox
     document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-    // Alternative selectors
-    document.querySelector('div[data-lexical-editor="true"][contenteditable="true"]') ||
-    document.querySelector('div[contenteditable="true"][aria-label*="message"]') ||
-    document.querySelector('div[contenteditable="true"][aria-label*="chat"]')
+    document.querySelector('div[data-lexical-editor="true"]')
   );
 }
 
 function findSendButton() {
   return (
-    document.querySelector('div[data-testid="send-button"]') ||  
-    document.querySelector('button[aria-label="Send"]') ||
-    document.querySelector('div[aria-label="Send"]') ||
-    document.querySelector('i[data-testid="send-message-icon"]') ||
-    document.querySelector('div[role="button"][aria-label="Send"]')
+    document.querySelector('div[data-testid="send-button"]') ||
+    document.querySelector('button[aria-label="Send"]')
   );
 }
 
 function simulateTyping(text, callback) {
-  isTyping = true;
-  
   const inputBox = findInputBox();
   if (!inputBox) {
     logDebug('Input box not found!');
-    isTyping = false;
     return;
   }
 
   logDebug('Found input - typing...');
   inputBox.focus();
 
-  // Clear any existing content
+  // Clear existing content
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
 
@@ -190,48 +144,54 @@ function simulateTyping(text, callback) {
   const interval = setInterval(() => {
     if (i < text.length) {
       document.execCommand('insertText', false, text[i]);
-      inputBox.dispatchEvent(new InputEvent('input', { bubbles: true }));
       i++;
     } else {
       clearInterval(interval);
       logDebug('Typing done');
-      isTyping = false;
       if (callback) callback();
     }
-  }, 100 + Math.random() * 1900); // Random delay between 0.1s and 2.0s
+  }, 150 + Math.random() * 300); // Variable typing speed
 }
 
 function sendAutoReply(responseText) {
-  logDebug('Starting reply...');
+  logDebug('Replying: ' + responseText.substring(0, 50));
+  lastSentMessage = responseText;
+  
   simulateTyping(responseText, () => {
     let sent = false;
     
-    // Try send button first
     const sendButton = findSendButton();
     if (sendButton) {
       sendButton.click();
-      logDebug('Reply sent via button!');
+      logDebug('Message sent!');
       sent = true;
     }
     
-    // Try Enter key
     if (!sent) {
       const inputBox = findInputBox();
       if (inputBox) {
         const enterEvent = new KeyboardEvent('keydown', {
           key: 'Enter',
           code: 'Enter',
-          keyCode: 13,
           bubbles: true
         });
         inputBox.dispatchEvent(enterEvent);
-        logDebug('Reply sent via Enter key');
+        logDebug('Sent via Enter');
         sent = true;
       }
     }
     
     if (!sent) {
-      logDebug('Failed to send reply!');
+      logDebug('All send attempts failed!');
     }
   });
+}
+
+function logDebug(msg) {
+  console.log('[School GC Bot] ' + msg);
+  try {
+    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
+  } catch (e) {
+    // Silent fail - extension context invalidated
+  }
 }
