@@ -36,7 +36,7 @@ if (document.body) {
 }
 
 setTimeout(() => {
-  logDebug('Bot ready - scanning every 1s for new messages');
+  logDebug('Bot ready - only watching for new incoming messages');
 }, 2000);
 
 function checkForNewMessages() {
@@ -44,55 +44,44 @@ function checkForNewMessages() {
   if (isTyping) return;
   
   try {
-    // Target actual chat message bubbles in Messenger
-    // These are divs with specific role and aria-label patterns for user messages
-    const messageSelectors = [
-      'div[role="button"][aria-label*="message"][tabindex="0"]',
-      'div[aria-label*="What do you mean"]',
-      'div[data-message-id]:not([aria-label*="emoji"]):not([aria-label*="sticker"]):not([aria-label*="send"])'
-    ];
+    // ONLY look for actual incoming user messages (not UI controls, not timestamps)
+    // Find messages that contain actual text content
+    const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
     
-    let messageBubbles = document.querySelectorAll(messageSelectors.join(', '));
+    let newMessages = [];
     
-    if (messageBubbles.length === 0) {
-      logDebug('No messages found with primary selector, trying fallback');
+    candidates.forEach(el => {
+      const text = el.textContent.trim();
+      if (text.length === 0 || text.length > 200) return;
       
-      // Fallback: find chat bubble elements
-      const chatBubbles = document.querySelectorAll('[data-testid="message-content"], [data-testid="message-row"]');
-      if (chatBubbles.length > 0) {
-        const latest = chatBubbles[chatBubbles.length - 1];
-        const messageText = latest.textContent.trim();
-        if (messageText.length > 0 && messageText.length < 200) {
-          const msgId = messageText;
-          if (!processedMessages.has(msgId)) {
-            processedMessages.add(msgId);
-            logDebug('Message found: ' + messageText);
-            handleTrigger(messageText);
-          }
-        }
-      }
-      return;
-    }
-    
-    // Process each message bubble
-    messageBubbles.forEach(bubble => {
-      const messageText = bubble.getAttribute('aria-label') || bubble.textContent;
+      // Skip UI elements, timestamps, and system messages
+      const lowerText = text.toLowerCase();
+      const skipPhrases = [
+        'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
+        'aa', 'reply to', 'message sent', 'what do you mean',
+        'pm', 'at ', 'by ', 'message'
+      ];
       
-      // Skip empty messages and UI controls
-      if (!messageText || messageText.trim().length < 3 || messageText.trim().length > 150) return;
+      // Skip timestamps (contains PM/AM patterns)
+      if (text.match(/\d+:[0-9]{2}\s*(PM|AM)/i)) return;
+      // Skip if starts with UI phrases
+      if (skipPhrases.some(phrase => lowerText.startsWith(phrase))) return;
+      // Skip system indicators
+      if (lowerText.includes('message sent')) return;
+      if (lowerText.includes('what do you mean')) return;
       
-      // Skip if it contains common UI phrases
-      const skipPhrases = ['press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file', 'Aa'];
-      if (skipPhrases.some(phrase => messageText.toLowerCase().includes(phrase))) return;
-      
-      const msgId = messageText;
-      
-      if (!processedMessages.has(msgId)) {
-        processedMessages.add(msgId);
-        logDebug('Message detected: ' + messageText);
-        handleTrigger(messageText);
-      }
+      newMessages.push({text: text, id: text});
     });
+    
+    // Process only the latest few messages
+    for (let i = newMessages.length - 1; i >= 0 && newMessages.length - i <= 3; i--) {
+      const msg = newMessages[i];
+      if (!processedMessages.has(msg.id)) {
+        processedMessages.add(msg.id);
+        logDebug('New message: ' + msg.text);
+        handleTrigger(msg.text);
+      }
+    }
     
     // Cleanup old entries
     if (processedMessages.size > 50) {
@@ -118,7 +107,7 @@ function handleTrigger(messageText) {
   
   logDebug('Checking: "' + lowerText + '"');
   
-  // Respond to birthday messages
+  // Respond to exact keyword matches (case insensitive)
   if (lowerText === 'happy birthday' || 
       lowerText === 'happy birthday!!' ||
       lowerText === 'happy birthday!') {
