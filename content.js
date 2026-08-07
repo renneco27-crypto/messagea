@@ -43,9 +43,37 @@ function checkForNewMessages() {
   if (isTyping) return;
   
   try {
+    // Debug: Log what we're finding
+    const allSpans = document.querySelectorAll('span[data-lexical-text="true"]');
+    const allMessageDivs = document.querySelectorAll('div[data-testid="message-content"]');
+    const allMessageRows = document.querySelectorAll('[data-testid*="message"], [data-testid*="Message"]');
+    logDebug('DOM scan: spans=' + allSpans.length + ' divs=' + allMessageDivs.length + ' msgRows=' + allMessageRows.length);
+    
     // Use the same selectors that worked
     const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
     
+    if (candidates.length === 0) {
+      logDebug('No message elements found - trying fallback selectors');
+      
+      // Fallback: Try to find message containers with different selectors
+      const fallbackSelectors = [
+        '[data-testid="message-content"]',
+        '[data-testid="message-row"]',
+        '[data-testid*="Message"]',
+        'span[data-lexical-text]',
+        'div[dir="auto"]'
+      ];
+      
+      for (const selector of fallbackSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          logDebug('Fallback found with "' + selector + '": ' + elements.length);
+        }
+      }
+      return;
+    }
+    
+    // Continue with normal processing...
     let newMessages = [];
     
     candidates.forEach(el => {
@@ -53,7 +81,7 @@ function checkForNewMessages() {
       if (text.length === 0 || text.length > 200) return;
       
       // Skip our own messages to prevent feedback loop
-      if (text === lastSentMessage || text.includes(lastSentMessage.substring(0, 20))) {
+      if (text === lastSentMessage || (lastSentMessage && text.includes(lastSentMessage.substring(0, 20)))) {
         return;
       }
       
