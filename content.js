@@ -300,10 +300,19 @@ function simulateTyping(text, callback) {
 
   if (chars.length * AVG_MS_PER_CHAR > PASTE_THRESHOLD_MS) {
     logDebug('📎 Text too long (' + chars.length + ' chars) — pasting instead of typing');
+    // Clear existing content, then paste the whole text at once.
+    try {
+      inputBox.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+    } catch (e) {
+      inputBox.innerHTML = '';
+    }
     try {
       document.execCommand('insertText', false, text);
     } catch (e) {
       inputBox.textContent = text;
+      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
     }
     isTyping = false;
     if (callback) callback();
