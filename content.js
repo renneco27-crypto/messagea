@@ -44,8 +44,8 @@ function checkForNewMessages() {
   if (isTyping) return;
   
   try {
-    // Find all message-related elements
-    const candidates = document.querySelectorAll('span[data-lexical-text="true"], div[data-testid="message-content"], div[role="button"]');
+    // Find actual chat message bubbles - NOT UI buttons or labels
+    const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
     
     let newMessages = [];
     
@@ -53,26 +53,35 @@ function checkForNewMessages() {
       let text = el.textContent.trim();
       if (text.length === 0 || text.length > 200) return;
       
-      // Extract the actual message content by removing prefixes
-      // Remove patterns like "At 6:49 PM, Lawrence: " or "5:48 PM by Lawrence: "
-      let messageContent = text.replace(/(At\s+)?\d+:\d+\s*(AM|PM)?\s*(,\s*)?(Lawrence\s*:)?/i, '').trim();
+      // Clean up message text - remove timestamp patterns
+      // "At 6:49 PM, Lawrence: Happy birthday" -> "Happy birthday"
+      // "6:54 PM by Lawrence: Hello" -> "Hello"
+      let messageContent = text
+        .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)\s*(,\s*)?/i, '')
+        .replace(/\s*(PM|AM)\s*(by\s+)?\w+:\s*/i, '')
+        .trim();
       
-      // Skip UI elements and system messages
+      // Skip empty, UI elements, and system messages
       const lowerText = messageContent.toLowerCase();
+      
+      // Comprehensive list of UI/system phrases to skip
       const skipPhrases = [
         'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
         'aa', 'reply to', 'message sent', 'what do you mean',
-        'settings', 'info', 'call', 'video', 'gif', 'photo', 'like'
+        'settings', 'info', 'call', 'video', 'gif', 'photo', 'like',
+        'enter', 'message', 'type a message', 'click to open',
+        'notifications', 'privacy', 'groups', 'friends', 'memories',
+        'watch', 'marketplace', 'gaming', 'pages', 'logout'
       ];
       
-      // Skip if starts with UI phrases
-      if (skipPhrases.some(phrase => lowerText.startsWith(phrase))) return;
+      // Skip if contains UI phrases
+      if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
       
       // Skip if still empty or too short
-      if (messageContent.length < 2) return;
+      if (messageContent.length < 3) return;
       
-      // Only process meaningful messages
-      newMessages.push({text: messageContent, id: messageContent, originalText: text});
+      // Only accept messages that look like actual user text
+      newMessages.push({text: messageContent, id: text});
     });
     
     // Process only the latest new messages (last 3)
@@ -80,7 +89,7 @@ function checkForNewMessages() {
       const msg = newMessages[i];
       if (!processedMessages.has(msg.id)) {
         processedMessages.add(msg.id);
-        logDebug('Message detected - extracted: "' + msg.text + '" from: "' + msg.originalText.substring(0, 100) + '"');
+        logDebug('Message detected: "' + msg.text + '"');
         handleTrigger(msg.text);
       }
     }
