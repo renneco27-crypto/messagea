@@ -12,6 +12,6 @@
     "js": ["content.js"],
     "run_at": "document_start"
   }],
-  "host_permissions": ["*://*.facebook.com/*", "*://*.messenger.com/*"],
+  "host_permissions": ["*://*.facebook.com/*", "*://*.messenger.com/*", "https://bottelegram-opw7.onrender.com/*"],
   "permissions": ["activeTab", "storage"]
 }

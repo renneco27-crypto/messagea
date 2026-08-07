@@ -190,19 +190,27 @@ function isSystemMessage(text) {
 }
 
 function handleTrigger(messageText) {
-  const lowerText = messageText.toLowerCase().trim();
-  
-  logDebug('🔍 Checking triggers for: "' + lowerText + '"');
-  
-  // Birthday trigger - respond to any message containing "birthday"
-  if (lowerText.includes('birthday')) {
-    logDebug('🎂 Birthday trigger matched!');
-    lastSentMessage = '🎉 Happy Birthday! Have a great day!';
-    sendAutoReply(lastSentMessage);
-    return;
-  }
-  
-  logDebug('❌ No trigger match found');
+  logDebug('🔍 Checking triggers for: "' + messageText + '"');
+
+  // Relay: forward raw message text to webapp, type out whatever it returns
+  relaySend(messageText).then(reply => {
+    if (reply) {
+      lastSentMessage = reply;
+      sendAutoReply(reply);
+    }
+  }).catch(err => {
+    logDebug('⚠️ Relay error: ' + (err && err.message ? err.message : err));
+  });
+}
+
+const RELAY_URL = 'https://bottelegram-opw7.onrender.com/relay';
+
+function relaySend(text) {
+  return fetch(RELAY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text })
+  }).then(r => r.json()).then(data => data.reply || null);
 }
 
 function findInputBox() {
