@@ -36,7 +36,7 @@ if (document.body) {
 }
 
 setTimeout(() => {
-  logDebug('Bot ready - only watching for new incoming messages');
+  logDebug('Bot ready - scanning for messages every 1s');
 }, 2000);
 
 function checkForNewMessages() {
@@ -44,9 +44,8 @@ function checkForNewMessages() {
   if (isTyping) return;
   
   try {
-    // ONLY look for actual incoming user messages (not UI controls, not timestamps)
-    // Find messages that contain actual text content
-    const candidates = document.querySelectorAll('span[data-lexical-text="true"], div[data-testid="message-content"]');
+    // Find all message-related elements
+    const candidates = document.querySelectorAll('span[data-lexical-text="true"], div[data-testid="message-content"], div[role="button"]');
     
     let newMessages = [];
     
@@ -54,36 +53,34 @@ function checkForNewMessages() {
       let text = el.textContent.trim();
       if (text.length === 0 || text.length > 200) return;
       
-      // Remove timestamp prefix like "At 6:49 PM," or "5:48 PM by Lawrence:"
-      text = text.replace(/^At \d+:\d+\s*(AM|PM)\s*,?\s*/i, '');
-      text = text.replace(/^\d+:\d+\s*(AM|PM)\s*(by)?\s*/i, '');
+      // Extract the actual message content by removing prefixes
+      // Remove patterns like "At 6:49 PM, Lawrence: " or "5:48 PM by Lawrence: "
+      let messageContent = text.replace(/(At\s+)?\d+:\d+\s*(AM|PM)?\s*(,\s*)?(Lawrence\s*:)?/i, '').trim();
       
-      // Skip UI elements, timestamps, and system messages
-      const lowerText = text.toLowerCase();
+      // Skip UI elements and system messages
+      const lowerText = messageContent.toLowerCase();
       const skipPhrases = [
         'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
         'aa', 'reply to', 'message sent', 'what do you mean',
-        'pm', 'at ', 'by ', 'message'
+        'settings', 'info', 'call', 'video', 'gif', 'photo', 'like'
       ];
       
       // Skip if starts with UI phrases
       if (skipPhrases.some(phrase => lowerText.startsWith(phrase))) return;
-      // Skip system indicators
-      if (lowerText.includes('message sent')) return;
-      if (lowerText.includes('what do you mean')) return;
       
-      // Only process meaningful text (at least 2 words or recognizable keywords)
-      if (text.length >= 3) {
-        newMessages.push({text: text, id: text});
-      }
+      // Skip if still empty or too short
+      if (messageContent.length < 2) return;
+      
+      // Only process meaningful messages
+      newMessages.push({text: messageContent, id: messageContent, originalText: text});
     });
     
-    // Process only the latest few messages
-    for (let i = newMessages.length - 1; i >= 0 && newMessages.length - i <= 3; i--) {
+    // Process only the latest new messages (last 3)
+    for (let i = newMessages.length - 1; i >= 0 && (newMessages.length - i) <= 3; i--) {
       const msg = newMessages[i];
       if (!processedMessages.has(msg.id)) {
         processedMessages.add(msg.id);
-        logDebug('New message: ' + msg.text);
+        logDebug('Message detected - extracted: "' + msg.text + '" from: "' + msg.originalText.substring(0, 100) + '"');
         handleTrigger(msg.text);
       }
     }
@@ -110,7 +107,7 @@ function logDebug(msg) {
 function handleTrigger(messageText) {
   const lowerText = messageText.toLowerCase().trim();
   
-  logDebug('Checking: "' + lowerText + '"');
+  logDebug('Checking trigger for: "' + lowerText + '"');
   
   // Check if message contains "happy birthday" anywhere
   if (lowerText.includes('happy birthday')) {
@@ -119,7 +116,7 @@ function handleTrigger(messageText) {
     return;
   }
   
-  logDebug('No match for: ' + lowerText);
+  logDebug('No trigger match for: ' + lowerText);
 }
 
 function findInputBox() {
@@ -181,7 +178,7 @@ function simulateTyping(text, callback) {
 }
 
 function sendAutoReply(responseText) {
-  logDebug('Replying: ' + responseText);
+  logDebug('Starting reply...');
   simulateTyping(responseText, () => {
     let sent = false;
     
@@ -189,7 +186,7 @@ function sendAutoReply(responseText) {
     const sendButton = findSendButton();
     if (sendButton) {
       sendButton.click();
-      logDebug('Sent!');
+      logDebug('Reply sent via button!');
       sent = true;
     }
     
@@ -204,13 +201,13 @@ function sendAutoReply(responseText) {
           bubbles: true
         });
         inputBox.dispatchEvent(enterEvent);
-        logDebug('Sent via Enter');
+        logDebug('Reply sent via Enter key');
         sent = true;
       }
     }
     
     if (!sent) {
-      logDebug('Failed to send!');
+      logDebug('Failed to send reply!');
     }
   });
 }
