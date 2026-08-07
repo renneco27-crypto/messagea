@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "School GC Helper",
+  "version": "1.0",
+  "description": "Auto-replies in Facebook group chats for school events",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "School GC Helper"
+  },
+  "content_scripts": [{
+    "matches": ["*://*.facebook.com/*", "*://*.messenger.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_start"
+  }],
+  "host_permissions": ["*://*.facebook.com/*", "*://*.messenger.com/*"],
+  "permissions": ["activeTab", "storage"]
+}
