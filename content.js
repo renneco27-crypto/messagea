@@ -46,13 +46,17 @@ function checkForNewMessages() {
   try {
     // ONLY look for actual incoming user messages (not UI controls, not timestamps)
     // Find messages that contain actual text content
-    const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
+    const candidates = document.querySelectorAll('span[data-lexical-text="true"], div[data-testid="message-content"]');
     
     let newMessages = [];
     
     candidates.forEach(el => {
-      const text = el.textContent.trim();
+      let text = el.textContent.trim();
       if (text.length === 0 || text.length > 200) return;
+      
+      // Remove timestamp prefix like "At 6:49 PM," or "5:48 PM by Lawrence:"
+      text = text.replace(/^At \d+:\d+\s*(AM|PM)\s*,?\s*/i, '');
+      text = text.replace(/^\d+:\d+\s*(AM|PM)\s*(by)?\s*/i, '');
       
       // Skip UI elements, timestamps, and system messages
       const lowerText = text.toLowerCase();
@@ -62,15 +66,16 @@ function checkForNewMessages() {
         'pm', 'at ', 'by ', 'message'
       ];
       
-      // Skip timestamps (contains PM/AM patterns)
-      if (text.match(/\d+:[0-9]{2}\s*(PM|AM)/i)) return;
       // Skip if starts with UI phrases
       if (skipPhrases.some(phrase => lowerText.startsWith(phrase))) return;
       // Skip system indicators
       if (lowerText.includes('message sent')) return;
       if (lowerText.includes('what do you mean')) return;
       
-      newMessages.push({text: text, id: text});
+      // Only process meaningful text (at least 2 words or recognizable keywords)
+      if (text.length >= 3) {
+        newMessages.push({text: text, id: text});
+      }
     });
     
     // Process only the latest few messages
@@ -107,16 +112,14 @@ function handleTrigger(messageText) {
   
   logDebug('Checking: "' + lowerText + '"');
   
-  // Respond to exact keyword matches (case insensitive)
-  if (lowerText === 'happy birthday' || 
-      lowerText === 'happy birthday!!' ||
-      lowerText === 'happy birthday!') {
+  // Check if message contains "happy birthday" anywhere
+  if (lowerText.includes('happy birthday')) {
     logDebug('Trigger matched - replying');
     sendAutoReply('🎉 Happy Birthday! Have a great day!');
     return;
   }
   
-  logDebug('No exact match for: ' + lowerText);
+  logDebug('No match for: ' + lowerText);
 }
 
 function findInputBox() {
