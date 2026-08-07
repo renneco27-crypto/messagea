@@ -3,6 +3,46 @@ let lastSentMessage = '';
 let botStartTime = Date.now();
 let isTyping = false;
 
+// Only respond to messages sent within this window (avoids replying to history)
+const FRESHNESS_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
+// During the first seconds after load the whole chat history renders; baseline it
+// without responding so past messages never trigger a reply.
+const STARTUP_GRACE_MS = 5000;
+// Tolerate a small future skew (clock drift) so a just-sent message still counts as fresh.
+const FUTURE_TOLERANCE_MS = 30 * 1000;
+
+/**
+ * Parse "At 6:32\u202fPM, ..." -> a Date for today at that clock time.
+ * Labels carry no date, so we assume today. Returns null if not parseable.
+ */
+function parseMessageTime(ariaLabel) {
+  const m = ariaLabel.match(/^At\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!m) return null;
+  let hour = parseInt(m[1], 10);
+  const minute = parseInt(m[2], 10);
+  const ap = m[3].toUpperCase();
+  if (ap === 'PM' && hour < 12) hour += 12;
+  if (ap === 'AM' && hour === 12) hour = 0;
+
+  const now = new Date();
+  const parsed = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+
+  // If parsed time lands >12h in the future, the message was actually yesterday
+  // (e.g. sent 11:58 PM, now 12:01 AM).
+  if (parsed.getTime() - now.getTime() > 12 * 60 * 60 * 1000) {
+    parsed.setDate(parsed.getDate() - 1);
+  }
+  return parsed;
+}
+
+/** True only if the message timestamp is "just now" (within FRESHNESS_WINDOW_MS). */
+function isFreshMessage(ariaLabel) {
+  const t = parseMessageTime(ariaLabel);
+  if (!t) return false; // can't parse timestamp -> do NOT respond (conservative)
+  const diff = Date.now() - t.getTime();
+  return diff >= -FUTURE_TOLERANCE_MS && diff <= FRESHNESS_WINDOW_MS;
+}
+
 // Track processed message IDs from Messenger
 let processedMessageIds = new Set();
 
@@ -62,6 +102,12 @@ function checkForNewMessages() {
         // Skip our own outgoing messages ("..., You: ...")
         if (isOwnMessage(ariaLabel)) {
           logDebug('⏭️ Own message skipped');
+          return;
+        }
+
+        // Only respond to messages sent just now, never chat history.
+        if (!isFreshMessage(ariaLabel)) {
+          logDebug('⏭️ Old message (history) skipped');
           return;
         }
 

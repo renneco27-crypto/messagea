@@ -1,11 +1,15 @@
 import re
 import sys
+import datetime as _dt
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 MESSENGER_HTML = r'C:\Users\corte\Desktop\messenger.html'
 REPLY = "🎉 Happy Birthday! Have a great day!"
 TRIGGER = 'birthday'
+
+# Fixed "now" so tests are deterministic. 7:05 PM.
+TEST2_NOW = _dt.datetime(2026, 8, 7, 19, 5, 0)
 
 # ---------------------------------------------------------------------------
 # DETECTION ALGORITHM  (mirror of content.js)
@@ -44,15 +48,57 @@ def matches_trigger(text):
     return TRIGGER in text.lower()
 
 
-def evaluate_message(aria_label):
-    """Run full pipeline. Returns dict with detection result."""
+# --- timestamp freshness (mirror of content.js parseMessageTime / isFreshMessage) ---
+FRESHNESS_WINDOW_MS = 3 * 60 * 1000
+FUTURE_TOLERANCE_MS = 30 * 1000
+
+
+def parse_message_time(aria_label, now_dt):
+    """Parse 'At 6:32\\u202fPM, ...' into a datetime on now_dt's date. Returns None if unparseable."""
+    import datetime as _dt
+    m = re.match(r'^At\s+(\d{1,2}):(\d{2})\s*(AM|PM)', aria_label, flags=re.I)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2))
+    ap = m.group(3).upper()
+    if ap == 'PM' and hour < 12:
+        hour += 12
+    if ap == 'AM' and hour == 12:
+        hour = 0
+    parsed = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # yesterday rollover
+    if (parsed - now_dt).total_seconds() > 12 * 3600:
+        parsed = parsed - _dt.timedelta(days=1)
+    return parsed
+
+
+def is_fresh_message(aria_label, now_dt):
+    import datetime as _dt
+    t = parse_message_time(aria_label, now_dt)
+    if t is None:
+        return False
+    diff_ms = (now_dt - t).total_seconds() * 1000
+    return -FUTURE_TOLERANCE_MS <= diff_ms <= FRESHNESS_WINDOW_MS
+
+
+def evaluate_message(aria_label, now_dt=None):
+    """Run full pipeline. Returns dict with detection result.
+    If now_dt is given, also applies the freshness gate (mirrors content.js)."""
+    if now_dt is None:
+        import datetime as _dt
+        now_dt = _dt.datetime.now()
     own = bool(re.search(r',\s*You\s*:', aria_label, flags=re.I))
     text = extract_message_text(aria_label)
+    fresh = is_fresh_message(aria_label, now_dt)
     triggered = (not own) and (len(text) >= 2) and (not is_system_message(text)) and matches_trigger(text)
+    if now_dt is not None:
+        triggered = triggered and fresh
     return {
         'aria_label': aria_label,
         'own': own,
         'extracted': text,
+        'fresh': fresh,
         'triggered': triggered,
     }
 
@@ -143,15 +189,15 @@ print('\n========== TEST 1: real messages from messenger.html ==========')
 pass_count = 0
 fail_count = 0
 for label, mid in real_messages:
-    res = evaluate_message(label)
-    # Expected behavior: incoming Lawrence "birthday" -> trigger; "You:" -> skip; textless -> skip
-    expected = (not res['own']) and ('birthday' in res['extracted'].lower())
+    # Deterministic: evaluate at 7:05 PM. Only the 7:04 PM birthday is fresh + triggers.
+    res = evaluate_message(label, now_dt=TEST2_NOW)
+    expected = (not res['own']) and ('birthday' in res['extracted'].lower()) and res['fresh']
     status = 'PASS' if (res['triggered'] == expected) else 'FAIL'
     if status == 'PASS':
         pass_count += 1
     else:
         fail_count += 1
-    print(f"[{status}] own={res['own']!s:5} extract={res['extracted'][:40]!r:44} trigger={res['triggered']!s:5} | {label[:70]!r}")
+    print(f"[{status}] own={res['own']!s:5} fresh={str(res['fresh']):5} extract={res['extracted'][:40]!r:44} trigger={res['triggered']!s:5} | {label[:70]!r}")
 
 print(f'\nTEST 1 summary: {pass_count} passed, {fail_count} failed')
 
@@ -166,7 +212,7 @@ synthetic_cases = [
     ("At 7:04\u202fPM, Lawrence: Happy birthday", True),
     ("At 7:04 PM, Lawrence: happy birthday", True),
     ("At 7:04\u202fPM, Lawrence: Happy Birthday!!!", True),
-    ("At 12:04\u202fAM, Maxy Cathy: HAPPY BIRTHDAY", True),
+    ("At 7:03\u202fPM, Maxy Cathy: HAPPY BIRTHDAY", True),
     ("At 7:04\u202fPM, John: happy birthday to you", True),
     ("At 7:04\u202fPM, Lawrence: Happy bday", False),  # no substring 'birthday'
     ("At 7:04\u202fPM, Lawrence: Meow", False),
@@ -176,16 +222,17 @@ synthetic_cases = [
     ("At 7:04\u202fPM, Lawrence: happy birth-day", False),  # hyphen breaks it
     ("At 7:04\u202fPM, Lawrence: happy birth days", False),  # not contiguous 'birthday'
     ("At 7:04\u202fPM, Anna: happy birthdyas", False),  # typo
-    ("At 8:30\u202fPM, Coach: Happy birthday champ!", True),
+    ("At 7:04\u202fPM, Coach: Happy birthday champ!", True),
 ]
 
+# Fixed "now" so trigger tests are deterministic and the 7:04 PM messages are fresh.
 t2_pass = 0
 t2_fail = 0
 for label, expected in synthetic_cases:
     # Mirror content.js: only real message bubbles pass the CSS selector gate.
     # Synthetic "Message sent" rows are role=button -> excluded before evaluation.
     is_button = label.startswith('Enter, Message sent')
-    res = evaluate_message(label)
+    res = evaluate_message(label, now_dt=TEST2_NOW)
     passes = selector_gate_passes(label, {'is_button': is_button, 'is_message': not is_button})
     effective_trigger = res['triggered'] if passes else False
     status = 'PASS' if (effective_trigger == expected) else 'FAIL'
@@ -232,9 +279,62 @@ print('Send button [data-testid="send-button"] found:', 'data-testid="send-butto
 print('Send button [aria-label="Send"] found:', 'aria-label="Send"' in html)
 print('(Send button not present because it only renders after text is typed; Enter key is the send fallback)')
 
+# ---------------------------------------------------------------------------
+# TEST 5: timestamp freshness - bot must NOT reply to history
+# ---------------------------------------------------------------------------
+
+print('\n========== TEST 5: freshness gate (must ignore history) ==========')
+
+# Simulate "now" = 7:05 PM. The captured history has birthday msgs at 6:56, 7:00, 7:04 PM.
+# Only the 7:04 PM one should be fresh. Older ones are history -> ignored.
+test5_now = _dt.datetime(2026, 8, 7, 19, 5, 0)
+
+freshness_cases = [
+    # (aria-label, now_dt, expected_fresh, note)
+    ("At 7:04\u202fPM, Lawrence: Happy birthday", test5_now, True, "1 min ago -> fresh"),
+    ("At 7:00\u202fPM, Lawrence: Happy birthday", test5_now, False, "5 min ago -> history"),
+    ("At 6:56\u202fPM, Lawrence: Happy birthday", test5_now, False, "9 min ago -> history"),
+    ("At 6:32\u202fPM, Lawrence: Meow", test5_now, False, "33 min ago -> history"),
+    ("At 7:05\u202fPM, Lawrence: Happy birthday", test5_now, True, "same minute -> fresh"),
+    ("At 7:06\u202fPM, Lawrence: Happy birthday", test5_now, False, "1 min future -> NOT fresh (out of tolerance window? no: 60s future < 30s tol -> fails)"),
+    ("At 7:05\u202fPM, You: 🎉 Happy Birthday!", test5_now, True, "own but fresh (own filter applied separately)"),
+    ("NoTimestamp, Lawrence: Happy birthday", test5_now, False, "unparseable -> conservative skip"),
+    ("At 7:04\u202fPM, Lawrence: Happy birthday", test5_now, True, "duplicate label check"),
+]
+
+t5_pass = 0
+t5_fail = 0
+for label, now_dt, expected_fresh, note in freshness_cases:
+    fresh = is_fresh_message(label, now_dt)
+    status = 'PASS' if (fresh == expected_fresh) else 'FAIL'
+    if status == 'PASS':
+        t5_pass += 1
+    else:
+        t5_fail += 1
+    print(f"[{status}] fresh={str(fresh):5} expected={str(expected_fresh):5} | {label[:45]!r:49} {note}")
+
+print(f'\nTEST 5 summary: {t5_pass} passed, {t5_fail} failed')
+
+# TEST 5b: full pipeline on real history with a fixed "now" AFTER the history times
+print('\nTEST 5b: real history messages evaluated at 7:20 PM (all should be ignored)')
+real_now = _dt.datetime(2026, 8, 7, 19, 20, 0)
+t5b_pass = 0
+t5b_fail = 0
+for label, mid in real_messages:
+    res = evaluate_message(label, now_dt=real_now)
+    # At 7:11 PM, ALL captured messages are history -> nothing should trigger
+    expected = False
+    status = 'PASS' if (res['triggered'] == expected) else 'FAIL'
+    if status == 'PASS':
+        t5b_pass += 1
+    else:
+        t5b_fail += 1
+    print(f"[{status}] triggered={str(res['triggered']):5} fresh={str(res['fresh']):5} own={str(res['own']):5} | {label[:60]!r}")
+print(f'\nTEST 5b summary: {t5b_pass} passed, {t5b_fail} failed')
+
 print('\n============================================================')
 # Overall requires the FIXED algorithm (code-point typing). The JS code-unit
 # result is a regression demonstration of the bug that Array.from() fixes.
-overall = (fail_count == 0) and (t2_fail == 0) and (written_cp == REPLY)
+overall = (fail_count == 0) and (t2_fail == 0) and (t5_fail == 0) and (t5b_fail == 0) and (written_cp == REPLY)
 print('OVERALL SMOKE TEST (fixed code-point algorithm):', 'PASS' if overall else 'FAIL')
 print('Regression note: old text[i] (UTF-16 unit) writing writes', repr(written_js), '-> must NOT be used')
