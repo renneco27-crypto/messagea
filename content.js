@@ -328,10 +328,11 @@ function simulateTyping(text, callback) {
       document.execCommand('insertText', false, text);
     } catch (e) {
       inputBox.textContent = text;
-      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
     }
+    // Lexical editor needs to process the inserted text before send works.
+    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
     isTyping = false;
-    if (callback) callback();
+    setTimeout(() => { if (callback) callback(); }, 300);
     return;
   }
 
