@@ -1,5 +1,5 @@
 let processedMessages = new Set();
-let ourOwnMessages = new Set(); // Track messages we've sent
+let lastSentMessage = '';
 let botStartTime = Date.now();
 let isTyping = false;
 
@@ -15,19 +15,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-logDebug('🤖 Bot script loaded on Messenger');
+logDebug('🤖 Bot loaded on Messenger');
 
-// Continuous message watching - every 1 second
-const scanInterval = setInterval(() => {
-  checkForNewMessages();
-}, 1000);
-
-// Also use MutationObserver for immediate detection
+// Watch for DOM changes
 const observer = new MutationObserver(() => {
   checkForNewMessages();
 });
 
-// Wait for DOM to be ready before observing
 if (document.body) {
   observer.observe(document.body, { childList: true, subtree: true });
 } else {
@@ -36,147 +30,104 @@ if (document.body) {
   });
 }
 
-setTimeout(() => {
-  logDebug('Bot ready - monitoring for new messages');
-}, 2000);
+// Also scan periodically
+setInterval(() => {
+  checkForNewMessages();
+}, 1000);
 
 function checkForNewMessages() {
-  // Prevent multiple checks if already typing
   if (isTyping) return;
   
   try {
-    // Find actual chat messages from other users
-    // Look for message elements that contain user text
+    // Target specific Messenger message elements
+    // These are the actual message bubbles from other users
     const messageElements = document.querySelectorAll('div[role="article"][aria-roledescription="message"]');
     
     if (messageElements.length === 0) {
-      // Fallback: Look for message content spans that contain actual text
-      const messageSpans = document.querySelectorAll('span[data-lexical-text="true"]');
-      processMessageElements(messageSpans);
+      // Fallback: try to find message content
+      const fallbackElements = document.querySelectorAll('div[aria-label*="message"][role="button"]');
+      processElements(fallbackElements);
       return;
     }
     
-    processMessageElements(messageElements);
+    processElements(messageElements);
     
   } catch (error) {
     logDebug('Scan error: ' + error.message.substring(0, 100));
   }
 }
 
-function processMessageElements(elements) {
-  // Only process the latest few messages to avoid scanning everything
+function processElements(elements) {
   const recentElements = Array.from(elements).slice(-10);
   
   recentElements.forEach(el => {
-    let textContent = el.textContent.trim();
+    // Extract text content
+    const textContent = el.textContent.trim();
     if (!textContent || textContent.length < 3) return;
     
-    // Skip UI elements, system messages, and timestamps
-    const skipPhrases = [
-      'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
-      'aa', 'reply to', 'message sent', 'what do you mean',
-      'type a message', 'click to open', 'notifications', 'type to search',
-      'online', 'active now', 'active today', 'typing',
+    // Get aria-label for additional context
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    
+    // Skip UI/system elements
+    const skipTexts = [
+      'press enter', 'send', 'emoji', 'sticker', 'attach', 'reply',
+      'message sent', 'what do you mean', 'message actions',
+      'type a message', 'click to open', 'notifications',
+      'type to search', 'online', 'active', 'typing',
       'settings', 'info', 'call', 'video', 'gif', 'photo', 'like',
-      'write to', 'compose', 'open more actions', 'choose',
-      'message actions', 'sent,', 'pm', 'messages_table'
+      'write to', 'compose', 'open more', 'choose',
+      'messages_table', 'sent,'
     ];
     
-    const lowerText = textContent.toLowerCase();
-    if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
+    const combinedText = (textContent + ' ' + ariaLabel).toLowerCase();
+    if (skipTexts.some(text => combinedText.includes(text))) return;
     
     // Skip timestamps
-    if (textContent.match(/^\d{1,2}:\d{2}\s*(AM|PM|am|pm)?/)) return;
+    if (textContent.match(/^\d{1,2}:\d{2}\s*(AM|PM|am|pm)/)) return;
     
-    // Check if this is our own message (skip it)
-    // Our own messages contain our reply text
-    const ourReply = '🎉 Happy Birthday! Have a great day!';
-    if (textContent.includes(ourReply) || 
-        (lastSentMessage && textContent.toLowerCase().includes(lastSentMessage.toLowerCase()))) {
-      return;
-    }
+    // Skip our own messages
+    if (lastSentMessage && textContent.includes(lastSentMessage)) return;
     
-    // Skip gibberish (too many repeated or non-standard characters)
-    // Check if text has unusual character patterns that suggest typing artifacts
-    if (isGibberish(textContent)) return;
+    // Skip message previews from our own replies
+    const ourReplyPreview = '🔍 Checking triggers for:';
+    if (textContent.includes(ourReplyPreview)) return;
     
-    // Clean the text for trigger matching
-    let cleanText = textContent;
-    // Remove timestamp prefixes like "At 6:49 PM, Lawrence: "
-    cleanText = cleanText.replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\s*(,\s*)?[^:]*:\s*/i, '');
-    cleanText = cleanText.trim();
+    // Create unique ID
+    const messageId = textContent + el.offsetTop + el.offsetLeft;
     
-    // Skip if cleaning left us with nothing meaningful
-    if (cleanText.length < 3) return;
-    
-    // Create unique ID from text content + element position
-    const messageId = cleanText + el.offsetTop + el.offsetLeft;
-    
-    // Only process if we haven't seen this message before
     if (!processedMessages.has(messageId)) {
       processedMessages.add(messageId);
-      logDebug('✅ Incoming message: "' + cleanText + '"');
-      handleTrigger(cleanText);
+      
+      // Clean timestamp prefix
+      let cleanText = textContent
+        .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\s*(,\s*)?[^:]*:\s*/i, '')
+        .trim();
+      
+      if (cleanText.length >= 3) {
+        logDebug('📩 New message: "' + cleanText + '"');
+        handleTrigger(cleanText);
+      }
     }
   });
   
-  // Cleanup old entries periodically
-  if (processedMessages.size > 50) {
+  if (processedMessages.size > 100) {
     processedMessages.clear();
   }
 }
 
-function isGibberish(text) {
-  // Detect common gibberish patterns from typing animation
-  // Too many repeated letters: "hhapppy", "bbbirrrthday"
-  // Random spacing: "Ha ppy Birthday"
-  // Character swapping: "Biarthyday"
-  
-  // Count repeated character sequences
-  const repeatedChars = text.match(/([a-zA-Z])\1{3,}/);
-  if (repeatedChars) return true;
-  
-  // Count unusual spacing
-  const words = text.split(' ');
-  if (words.length > 2) {
-    const avgWordLength = text.replace(/\s/g, '').length / words.length;
-    // Gibberish often has very short avg word length due to weird spacing
-    if (avgWordLength < 1.5) return true;
-  }
-  
-  return false;
-}
-
-function logDebug(msg) {
-  console.log('[School GC Bot] ' + msg);
-  try {
-    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
-  } catch (e) {
-    // Silently fail when extension context is invalidated
-  }
-}
-
-let lastSentMessage = '';
-
 function handleTrigger(messageText) {
   const lowerText = messageText.toLowerCase().trim();
-  
   logDebug('🔍 Checking triggers for: "' + lowerText + '"');
   
-  // Check for birthday phrases
-  const birthdayKeywords = ['happy birthday', 'happy bday', 'happiest birthday'];
-  
-  for (const keyword of birthdayKeywords) {
-    if (lowerText.includes(keyword)) {
-      logDebug('🎂 Birthday trigger matched - replying');
-      lastSentMessage = '🎉 Happy Birthday! Have a great day!';
-      ourOwnMessages.add(lastSentMessage);
-      sendAutoReply('🎉 Happy Birthday! Have a great day!');
-      return;
-    }
+  // Birthday trigger
+  if (lowerText.includes('happy birthday')) {
+    logDebug('🎂 Trigger matched - replying');
+    lastSentMessage = '🎉 Happy Birthday! Have a great day!';
+    sendAutoReply(lastSentMessage);
+    return;
   }
   
-  logDebug('❌ No trigger match found');
+  logDebug('❌ No match for: ' + lowerText);
 }
 
 function findInputBox() {
@@ -205,10 +156,10 @@ function simulateTyping(text, callback) {
     return;
   }
 
-  logDebug('⌨️ Found input box - typing...');
+  logDebug('⌨️ Typing response...');
   inputBox.focus();
 
-  // Clear any existing content
+  // Clear existing content
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
 
@@ -219,23 +170,22 @@ function simulateTyping(text, callback) {
       i++;
     } else {
       clearInterval(interval);
-      logDebug('✅ Typing complete');
+      logDebug('✅ Done typing');
       isTyping = false;
       if (callback) callback();
     }
-  }, 150 + Math.random() * 300); // More natural typing speed
+  }, 150 + Math.random() * 300);
 }
 
 function sendAutoReply(responseText) {
-  logDebug('📤 Sending: ' + responseText.substring(0, 50));
-  
+  logDebug('📤 Sending reply...');
   simulateTyping(responseText, () => {
     let sent = false;
     
     const sendButton = findSendButton();
     if (sendButton) {
       sendButton.click();
-      logDebug('✅ Sent via button!');
+      logDebug('✅ Sent!');
       sent = true;
     }
     
@@ -245,7 +195,6 @@ function sendAutoReply(responseText) {
         const enterEvent = new KeyboardEvent('keydown', {
           key: 'Enter',
           code: 'Enter',
-          keyCode: 13,
           bubbles: true
         });
         inputBox.dispatchEvent(enterEvent);
@@ -254,13 +203,20 @@ function sendAutoReply(responseText) {
       }
     }
     
-    if (!sent) {
-      logDebug('❌ Failed to send!');
-    }
+    if (!sent) logDebug('❌ Failed to send!');
     
-    // Wait before allowing next reply to prevent loops
+    // Cooldown
     setTimeout(() => {
       isTyping = false;
-    }, 2000);
+    }, 1500);
   });
+}
+
+function logDebug(msg) {
+  console.log('[School GC Bot] ' + msg);
+  try {
+    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
+  } catch (e) {
+    // Silent fail
+  }
 }
