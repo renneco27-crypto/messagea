@@ -290,13 +290,28 @@ function simulateTyping(text, callback) {
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
   } catch (e) {
-    // Try alternative clearing
     inputBox.innerHTML = '';
+  }
+
+  const chars = Array.from(text);
+  // Average ~400ms per char. If total typing would exceed 2s, paste it all at once.
+  const AVG_MS_PER_CHAR = 400;
+  const PASTE_THRESHOLD_MS = 2000;
+
+  if (chars.length * AVG_MS_PER_CHAR > PASTE_THRESHOLD_MS) {
+    logDebug('📎 Text too long (' + chars.length + ' chars) — pasting instead of typing');
+    try {
+      document.execCommand('insertText', false, text);
+    } catch (e) {
+      inputBox.textContent = text;
+    }
+    isTyping = false;
+    if (callback) callback();
+    return;
   }
 
   // Iterate by code points (Array.from), NOT text[i], so emoji like 🎉
   // (a surrogate pair) aren't split into two broken characters.
-  const chars = Array.from(text);
   let i = 0;
   const interval = setInterval(() => {
     if (i < chars.length) {
