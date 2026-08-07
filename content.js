@@ -88,9 +88,12 @@ if (document.body) {
 }
 
 // Also scan periodically
+// NOTE: setInterval is throttled to ~1/min in background tabs, so it can't
+// reliably catch messages on tab switch. Rely on the MutationObserver above
+// for real-time detection; this kept only as a light same-tab fallback.
 setInterval(() => {
   checkForNewMessages();
-}, 1000);
+}, 5000);
 
 setTimeout(() => {
   logDebug('Bot ready - monitoring for messages');
