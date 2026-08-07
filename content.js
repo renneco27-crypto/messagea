@@ -1,6 +1,7 @@
 let processedMessages = new Set();
 let botStartTime = Date.now();
 let isTyping = false;
+let lastSentMessage = '';
 
 // Respond to ping from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -53,9 +54,21 @@ function checkForNewMessages() {
       let text = el.textContent.trim();
       if (text.length === 0 || text.length > 200) return;
       
+      // Skip our own messages to prevent feedback loop
+      if (text === lastSentMessage || text.includes(lastSentMessage.substring(0, 20))) {
+        return;
+      }
+      
+      // Additional check: look for outgoing message indicators
+      const isInOutgoingBubble = el.closest('[data-testid="message-content"]')?.parentElement?.className?.includes('outgoing') ||
+                                el.closest('[data-testid="MessageGroupOutgoing"]') ||
+                                el.closest('.message-out');
+      
+      if (isInOutgoingBubble) {
+        return; // Skip our own outgoing messages
+      }
+      
       // Clean up message text - remove timestamp patterns
-      // "At 6:49 PM, Lawrence: Happy birthday" -> "Happy birthday"
-      // "6:54 PM by Lawrence: Hello" -> "Hello"
       let messageContent = text
         .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)\s*(,\s*)?/i, '')
         .replace(/\s*(PM|AM)\s*(by\s+)?\w+:\s*/i, '')
@@ -121,7 +134,9 @@ function handleTrigger(messageText) {
   // Check if message contains "happy birthday" anywhere
   if (lowerText.includes('happy birthday')) {
     logDebug('Trigger matched - replying');
-    sendAutoReply('🎉 Happy Birthday! Have a great day!');
+    const reply = '🎉 Happy Birthday! Have a great day!';
+    lastSentMessage = reply;
+    sendAutoReply(reply);
     return;
   }
   
