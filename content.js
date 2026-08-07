@@ -1,6 +1,6 @@
 let processedMessages = new Set();
 let lastSentMessage = '';
-let myUserId = null;
+let pingTimeoutId = null;
 
 logDebug('Bot script loaded on Messenger');
 
@@ -23,55 +23,61 @@ const scanInterval = setInterval(() => {
   checkForNewMessages();
 }, 1000);
 
+// Respond to ping from popup with immediate reply
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === "PING") {
+    sendResponse({botReady: true, timestamp: Date.now()});
+    // Don't return true - immediate sync response
+  }
+  return false;
+});
+
 setTimeout(() => {
-  logDebug('Bot ready - monitoring started');
-}, 2000);
+  logDebug('Bot ready - active on current tab');
+}, 1000);
 
 function checkForNewMessages() {
   try {
     // Find message content spans - these contain actual text
     const messageSpans = document.querySelectorAll('span[data-lexical-text="true"]');
     
-    if (messageSpans.length === 0) {
-      return;
-    }
+    if (messageSpans.length === 0) return;
     
-    // Get the most recent message
-    const latestSpan = messageSpans[messageSpans.length - 1];
-    const messageText = latestSpan.textContent.trim();
+    // Check multiple recent messages
+    const recentSpans = Array.from(messageSpans).slice(-5);
     
-    if (!messageText || messageText.length < 3) return;
-    
-    // Filter out system/UI text
-    const skipPhrases = [
-      'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
-      'aa', 'reply to', 'message sent', 'what do you mean',
-      'type a message', 'click to open', 'notifications', 'type to search',
-      'online', 'active now', 'active today'
-    ];
-    
-    const lowerText = messageText.toLowerCase();
-    if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
-    
-    // Skip if this looks like it's our sent message or UI
-    if (messageText === lastSentMessage || 
-        messageText.includes('typing') ||
-        messageText === 'Aa') return;
-    
-    // Create unique ID based on text content and timestamp
-    const messageId = messageText + Date.now();
-    
-    // Only process if we haven't seen this message recently
-    if (!processedMessages.has(messageText)) {
-      processedMessages.add(messageText);
-      logDebug('Message: "' + messageText + '"');
-      handleTrigger(messageText);
+    recentSpans.forEach(span => {
+      const messageText = span.textContent.trim();
       
-      // Clean old entries
-      if (processedMessages.size > 100) {
-        processedMessages.clear();
+      if (!messageText || messageText.length < 3) return;
+      
+      // Filter out system/UI text
+      const skipPhrases = [
+        'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
+        'aa', 'reply to', 'message sent', 'what do you mean',
+        'type a message', 'click to open', 'notifications', 'type to search',
+        'online', 'active now', 'active today', 'typing'
+      ];
+      
+      const lowerText = messageText.toLowerCase();
+      if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
+      
+      // Skip if this is our own message
+      if (messageText === lastSentMessage) return;
+      
+      // Unique key for deduplication
+      const messageKey = messageText + span.offsetTop + span.offsetLeft;
+      
+      if (!processedMessages.has(messageKey)) {
+        processedMessages.add(messageKey);
+        logDebug('Message: "' + messageText + '"');
+        handleTrigger(messageText);
+        
+        if (processedMessages.size > 100) {
+          processedMessages.clear();
+        }
       }
-    }
+    });
     
   } catch (error) {
     // Silent fail
@@ -83,33 +89,22 @@ function handleTrigger(messageText) {
   
   // Trigger on partial or full match (>=2 words matched)
   const triggers = [
-    { pattern: 'happy birthday', response: '🎉 Happy Birthday! Have a great day!', threshold: 0.5 },
-    { pattern: 'hello', response: '👋 Hey there!', threshold: 1.0 },
-    { pattern: 'hi', response: '👋 Hello!', threshold: 1.0 },
-    { pattern: 'class today', response: 'Checking... Please wait.', threshold: 1.0 }
+    { pattern: 'happy birthday', response: '🎉 Happy Birthday! Have a great day!' },
+    { pattern: 'hello', response: '👋 Hey there!' },
+    { pattern: 'hi', response: '👋 Hello!' },
+    { pattern: 'class today', response: 'Checking... Please wait.' }
   ];
   
   for (const trigger of triggers) {
-    const patternWords = trigger.pattern.split(' ');
-    const messageWords = lowerText.split(' ');
-    
-    let matchCount = 0;
-    for (const pWord of patternWords) {
-      if (messageWords.some(mWord => mWord.includes(pWord))) {
-        matchCount++;
-      }
-    }
-    
-    const matchRatio = matchCount / patternWords.length;
-    
-    if (matchRatio >= trigger.threshold) {
-      logDebug('Trigger matched! (' + matchRatio + ')');
+    if (lowerText.includes(trigger.pattern)) {
+      logDebug('Trigger matched: ' + trigger.pattern);
+      lastSentMessage = trigger.response;
       sendAutoReply(trigger.response);
       return;
     }
   }
   
-  logDebug('No trigger match for: ' + lowerText);
+  logDebug('No match: ' + lowerText);
 }
 
 function findInputBox() {
@@ -150,12 +145,11 @@ function simulateTyping(text, callback) {
       logDebug('Typing done');
       if (callback) callback();
     }
-  }, 150 + Math.random() * 300); // Variable typing speed
+  }, 150 + Math.random() * 300);
 }
 
 function sendAutoReply(responseText) {
-  logDebug('Replying: ' + responseText.substring(0, 50));
-  lastSentMessage = responseText;
+  logDebug('Sending: ' + responseText.substring(0, 50));
   
   simulateTyping(responseText, () => {
     let sent = false;
@@ -163,7 +157,7 @@ function sendAutoReply(responseText) {
     const sendButton = findSendButton();
     if (sendButton) {
       sendButton.click();
-      logDebug('Message sent!');
+      logDebug('Sent!');
       sent = true;
     }
     
@@ -182,7 +176,7 @@ function sendAutoReply(responseText) {
     }
     
     if (!sent) {
-      logDebug('All send attempts failed!');
+      logDebug('All send methods failed!');
     }
   });
 }
@@ -192,6 +186,6 @@ function logDebug(msg) {
   try {
     chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
   } catch (e) {
-    // Silent fail - extension context invalidated
+    // Silent fail
   }
 }

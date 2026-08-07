@@ -1,53 +1,45 @@
-// Listen for messages from content script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === "DEBUG_LOG") {
-    const debugContent = document.getElementById('debug-content');
-    if (debugContent) {
-      const time = new Date().toLocaleTimeString();
-      debugContent.textContent += `[${time}] ${request.message}\n`;
-      debugContent.scrollTop = debugContent.scrollHeight;
-    }
-  }
-});
-
-// Check active tab status
+// Check if bot is active in current tab
 function checkBotStatus() {
   const debugContent = document.getElementById('debug-content');
+  if (debugContent) {
+    debugContent.innerHTML = '<span class="status-info">Checking connection...</span>';
+  }
   
   chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
     if (!tabs[0]) {
-      if (debugContent) {
-        debugContent.textContent = 'No active tab found\n';
-      }
+      if (debugContent) debugContent.innerHTML = '<span class="status-error">No active tab found</span>';
       return;
     }
     
-    const tabUrl = tabs[0].url || '';
-    
-    if (tabUrl.includes('messenger.com')) {
-      if (debugContent) {
-        debugContent.innerHTML = '<span class="status-info">Checking connection to Messenger bot...</span>\n';
+    // Check if we're on Messenger or Facebook
+    if (tabs[0].url && (tabs[0].url.includes('messenger.com') || tabs[0].url.includes('facebook.com'))) {
+      // Try to ping the content script with retry
+      pingContentScript(tabs[0].id, 3);
+    } else {
+      if (debugContent) debugContent.innerHTML = '<span class="status-info">Go to Messenger or Facebook to see activity</span>';
+    }
+  });
+}
+
+function pingContentScript(tabId, retries) {
+  const debugContent = document.getElementById('debug-content');
+  
+  chrome.tabs.sendMessage(tabId, {type: "PING"}, (response) => {
+    if (chrome.runtime.lastError || !response || !response.botReady) {
+      if (retries > 0) {
+        // Retry with delay
+        setTimeout(() => pingContentScript(tabId, retries - 1), 1000);
+        return;
       }
       
-      // Ping the content script
-      chrome.tabs.sendMessage(tabs[0].id, {type: "PING"}, (response) => {
-        if (chrome.runtime.lastError) {
-          if (debugContent) {
-            debugContent.innerHTML = '<span class="status-error">Bot not active. Click refresh below.</span>\n';
-          }
-        } else if (response && response.botReady) {
-          if (debugContent) {
-            debugContent.innerHTML = '<span class="status-connected">Bot connected! Monitoring messages...</span>\n';
-          }
-        } else {
-          if (debugContent) {
-            debugContent.innerHTML = '<span class="status-error">Unexpected response from bot</span>\n';
-          }
-        }
-      });
+      if (debugContent) {
+        debugContent.innerHTML = 
+          '<span class="status-error">Bot not active. Click refresh below.</span>';
+      }
     } else {
       if (debugContent) {
-        debugContent.innerHTML = '<span class="status-info">Switch to Messenger tab and click refresh</span>\n';
+        debugContent.innerHTML = 
+          '<span class="status-connected">Bot connected! Monitoring messages...</span>';
       }
     }
   });
@@ -55,18 +47,9 @@ function checkBotStatus() {
 
 // Refresh Messenger tab
 function refreshMessenger() {
-  const debugContent = document.getElementById('debug-content');
   chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-    if (tabs[0] && tabs[0].url.includes('messenger.com')) {
+    if (tabs[0] && (tabs[0].url.includes('messenger.com') || tabs[0].url.includes('facebook.com'))) {
       chrome.tabs.reload(tabs[0].id);
-      if (debugContent) {
-        debugContent.innerHTML = '<span class="status-info">Refreshing Messenger...</span>\n';
-        setTimeout(checkBotStatus, 3000);
-      }
-    } else {
-      if (debugContent) {
-        debugContent.innerHTML = '<span class="status-error">Not on Messenger tab</span>\n';
-      }
     }
   });
 }
@@ -74,9 +57,9 @@ function refreshMessenger() {
 // Check immediately
 checkBotStatus();
 
-// Add refresh button event listener
+// Refresh status when popup is shown
 document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(checkBotStatus, 500);
+  setTimeout(checkBotStatus, 1000);
   
   // Add refresh button
   const refreshBtn = document.createElement('button');
@@ -90,7 +73,25 @@ document.addEventListener('DOMContentLoaded', () => {
     border-radius: 4px;
     cursor: pointer;
     font-weight: bold;
+    display: block;
   `;
   refreshBtn.addEventListener('click', refreshMessenger);
   document.body.appendChild(refreshBtn);
+});
+
+// Listen for messages from content script
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === "DEBUG_LOG") {
+    const debugContent = document.getElementById('debug-content');
+    if (debugContent && !debugContent.querySelector('.status-connected')) {
+      debugContent.innerHTML = '<span class="status-connected">Bot connected! Monitoring messages...</span>';
+    }
+    
+    // Append log to debug content
+    const logElement = document.createElement('div');
+    const time = new Date().toLocaleTimeString();
+    logElement.textContent = `[${time}] ${request.message}`;
+    debugContent.appendChild(logElement);
+    debugContent.scrollTop = debugContent.scrollHeight;
+  }
 });
