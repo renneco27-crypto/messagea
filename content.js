@@ -46,73 +46,55 @@ function checkForNewMessages() {
   if (isTyping) return;
   
   try {
-    // Method 1: Look for message rows with aria-label containing timestamp + sender
-    // These are the actual individual messages
-    const messageDivs = document.querySelectorAll('div[aria-label*=" message"][aria-roledescription="message"], div[aria-label*="PM"][aria-label*="by"]');
-    
+    // Real Messenger message bubbles: aria-roledescription="message" + data-message-id.
+    // NOTE: do NOT also match role="button" "Message sent" rows (those are our own sends -> loop).
+    const messageDivs = document.querySelectorAll('div[aria-roledescription="message"][data-message-id]');
+
     if (messageDivs.length > 0) {
-      logDebug('🔍 Found ' + messageDivs.length + ' message elements');
-      
       messageDivs.forEach(div => {
         const ariaLabel = div.getAttribute('aria-label') || '';
         const messageId = div.getAttribute('data-message-id') || ariaLabel + div.offsetTop;
-        
+
         // Skip if already processed
         if (processedMessages.has(messageId)) return;
         processedMessages.add(messageId);
-        
+
+        // Skip our own outgoing messages ("..., You: ...")
+        if (isOwnMessage(ariaLabel)) {
+          logDebug('⏭️ Own message skipped');
+          return;
+        }
+
         // Extract message text from aria-label
-        // Format: "At 7:04 PM, Lawrence: Happy birthday"
+        // Format: "At 7:04 PM, Lawrence: Happy birthday"  (note: \u202f before PM)
         let messageText = extractMessageText(ariaLabel);
-        
+
         logDebug('📨 Raw: "' + ariaLabel + '"');
         logDebug('📝 Extracted: "' + messageText + '"');
-        
+
         // Skip if nothing extracted
         if (!messageText || messageText.length < 2) {
           logDebug('⚠️ Empty message after extraction');
           return;
         }
-        
-        // Skip own messages
-        if (isOwnMessage(messageText, ariaLabel)) {
-          logDebug('⏭️ Skipping own message');
-          return;
-        }
-        
+
         // Skip system messages
         if (isSystemMessage(messageText)) {
           logDebug('⏭️ System message filtered');
           return;
         }
-        
+
         handleTrigger(messageText);
       });
-      
+
       return;
     }
-    
-    // Method 2: Fallback - look for message text in spans
-    const messageSpans = document.querySelectorAll('span[dir="auto"]:not([data-lexical-text]):not([aria-hidden="true"])');
-    if (messageSpans.length > 0) {
-      const latestSpan = messageSpans[messageSpans.length - 1];
-      const text = latestSpan.textContent.trim();
-      
-      if (text.length >= 3 && text.length < 100) {
-        const messageId = 'span_' + text + latestSpan.offsetTop;
-        if (!processedMessages.has(messageId)) {
-          processedMessages.add(messageId);
-          logDebug('📝 Span fallback: "' + text + '"');
-          handleTrigger(text);
-        }
-      }
-    }
-    
+
     // Cleanup
     if (processedMessages.size > 100) {
       processedMessages.clear();
     }
-    
+
   } catch (error) {
     logDebug('⚠️ Scan error: ' + error.message.substring(0, 150));
   }
@@ -138,15 +120,10 @@ function extractMessageText(ariaLabel) {
   return text || '';
 }
 
-function isOwnMessage(text, ariaLabel) {
-  // Check if this message contains our last reply
-  if (lastSentMessage && (text.includes(lastSentMessage) || ariaLabel.includes(lastSentMessage))) {
-    return true;
-  }
-  
-  // Check if we're in an outgoing message container
-  // Outgoing messages usually have different CSS classes
-  return false;
+function isOwnMessage(ariaLabel) {
+  // Own messages are labelled: "At 7:04\u202fPM, You: <message>"
+  const match = ariaLabel.match(/,\s*You\s*:/i);
+  return !!match;
 }
 
 function isSystemMessage(text) {
@@ -262,10 +239,13 @@ function simulateTyping(text, callback) {
     inputBox.innerHTML = '';
   }
 
+  // Iterate by code points (Array.from), NOT text[i], so emoji like 🎉
+  // (a surrogate pair) aren't split into two broken characters.
+  const chars = Array.from(text);
   let i = 0;
   const interval = setInterval(() => {
-    if (i < text.length) {
-      document.execCommand('insertText', false, text[i]);
+    if (i < chars.length) {
+      document.execCommand('insertText', false, chars[i]);
       i++;
     } else {
       clearInterval(interval);
