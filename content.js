@@ -3,6 +3,7 @@ let lastSentMessage = '';
 let botStartTime = Date.now();
 let isTyping = false;
 let botStopped = false;
+let currentTypingInterval = null;
 
 // Sync stop state from popup
 chrome.storage.local.get('botStopped', (data) => {
@@ -12,6 +13,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.botStopped) {
     botStopped = !!changes.botStopped.newValue;
     logDebug(botStopped ? '⏹ Bot stopped' : '▶ Bot started');
+    if (botStopped) stopTyping();
   }
 });
 
@@ -286,6 +288,7 @@ function findSendButton() {
 }
 
 function simulateTyping(text, callback) {
+  if (botStopped) return;
   isTyping = true;
   
   const inputBox = findInputBox();
@@ -335,17 +338,33 @@ function simulateTyping(text, callback) {
   // Iterate by code points (Array.from), NOT text[i], so emoji like 🎉
   // (a surrogate pair) aren't split into two broken characters.
   let i = 0;
-  const interval = setInterval(() => {
+  currentTypingInterval = setInterval(() => {
+    if (botStopped) {
+      clearInterval(currentTypingInterval);
+      currentTypingInterval = null;
+      isTyping = false;
+      logDebug('⏹ Typing halted by stop');
+      return;
+    }
     if (i < chars.length) {
       document.execCommand('insertText', false, chars[i]);
       i++;
     } else {
-      clearInterval(interval);
+      clearInterval(currentTypingInterval);
+      currentTypingInterval = null;
       logDebug('✅ Typing complete');
       isTyping = false;
       if (callback) callback();
     }
   }, 200 + Math.random() * 500); // 200ms to 700ms between characters
+}
+
+function stopTyping() {
+  if (currentTypingInterval) {
+    clearInterval(currentTypingInterval);
+    currentTypingInterval = null;
+  }
+  isTyping = false;
 }
 
 function sendAutoReply(responseText) {
