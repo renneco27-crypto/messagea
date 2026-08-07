@@ -13,8 +13,14 @@ function checkBotStatus() {
     
     // Check if we're on Messenger or Facebook
     if (tabs[0].url && (tabs[0].url.includes('messenger.com') || tabs[0].url.includes('facebook.com'))) {
-      // Try to ping the content script with retry
-      pingContentScript(tabs[0].id, 3);
+      // Check if bot is stopped
+      chrome.storage.local.get('botStopped', (data) => {
+        if (data.botStopped) {
+          if (debugContent) debugContent.innerHTML = '<span class="status-stopped">⏹ Bot stopped. Press Start Bot to resume.</span>';
+          return;
+        }
+        pingContentScript(tabs[0].id, 3);
+      });
     } else {
       if (debugContent) debugContent.innerHTML = '<span class="status-info">Go to Messenger or Facebook to see activity</span>';
     }
@@ -45,39 +51,51 @@ function pingContentScript(tabId, retries) {
   });
 }
 
-// Refresh Messenger tab
-function refreshMessenger() {
-  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-    if (tabs[0] && (tabs[0].url.includes('messenger.com') || tabs[0].url.includes('facebook.com'))) {
-      chrome.tabs.reload(tabs[0].id);
-    }
-  });
-}
-
 // Check immediately
 checkBotStatus();
 
 // Refresh status when popup is shown
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(checkBotStatus, 1000);
-  
-  // Add refresh button
-  const refreshBtn = document.createElement('button');
-  refreshBtn.textContent = 'Refresh Messenger';
-  refreshBtn.style.cssText = `
-    margin-top: 10px;
-    padding: 10px 15px;
-    background: #4267B2;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: bold;
-    display: block;
-  `;
-  refreshBtn.addEventListener('click', refreshMessenger);
-  document.body.appendChild(refreshBtn);
 });
+
+// Stop / start bot
+const stopBtn = document.getElementById('stop-btn');
+let isStopped = false;
+
+function updateStopButton() {
+  if (stopBtn) {
+    stopBtn.textContent = isStopped ? 'Start Bot' : 'Stop Bot';
+    stopBtn.classList.toggle('stopped', isStopped);
+  }
+}
+
+// Load saved stop state
+if (stopBtn) {
+  chrome.storage.local.get('botStopped', (data) => {
+    isStopped = !!data.botStopped;
+    updateStopButton();
+  });
+
+  stopBtn.addEventListener('click', () => {
+    isStopped = !isStopped;
+    chrome.storage.local.set({ botStopped: isStopped });
+    updateStopButton();
+    checkBotStatus();
+  });
+}
+
+// Refresh button
+const refreshBtn = document.getElementById('refresh-btn');
+if (refreshBtn) {
+  refreshBtn.addEventListener('click', () => {
+    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+      if (tabs[0] && (tabs[0].url.includes('messenger.com') || tabs[0].url.includes('facebook.com'))) {
+        chrome.tabs.reload(tabs[0].id);
+      }
+    });
+  });
+}
 
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

@@ -2,6 +2,18 @@ let processedMessages = new Set();
 let lastSentMessage = '';
 let botStartTime = Date.now();
 let isTyping = false;
+let botStopped = false;
+
+// Sync stop state from popup
+chrome.storage.local.get('botStopped', (data) => {
+  botStopped = !!data.botStopped;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.botStopped) {
+    botStopped = !!changes.botStopped.newValue;
+    logDebug(botStopped ? '⏹ Bot stopped' : '▶ Bot started');
+  }
+});
 
 // Only respond to messages sent within this window (avoids replying to history)
 const FRESHNESS_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
@@ -84,6 +96,7 @@ setTimeout(() => {
 
 function checkForNewMessages() {
   if (isTyping) return;
+  if (botStopped) return;
   
   try {
     // Real Messenger message bubbles: aria-roledescription="message" + data-message-id.
