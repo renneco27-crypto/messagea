@@ -204,12 +204,13 @@ function handleTrigger(messageText) {
 }
 
 const RELAY_URL = 'https://bottelegram-opw7.onrender.com/relay';
+const RELAY_AUTH_HASH = '86784300a71916392055ffb149d99f6cd1678b34b436897a85a52f0fd71d894f';
 
 function relaySend(text) {
   return fetch(RELAY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: text })
+    body: JSON.stringify({ text: text, auth_hash: RELAY_AUTH_HASH })
   }).then(r => r.json()).then(data => data.reply || null);
 }
 
