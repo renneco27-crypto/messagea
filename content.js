@@ -1,6 +1,19 @@
 let processedMessages = new Set();
 let lastSentMessage = '';
-let pingTimeoutId = null;
+let isTyping = false;
+let botStartTime = Date.now();
+
+// Respond to ping from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === "PING") {
+    try {
+      sendResponse({botReady: true});
+    } catch (e) {
+      // Ignore if context invalidated
+    }
+    return true;
+  }
+});
 
 logDebug('Bot script loaded on Messenger');
 
@@ -9,7 +22,6 @@ const observer = new MutationObserver(() => {
   checkForNewMessages();
 });
 
-// Wait for DOM to be ready before observing
 if (document.body) {
   observer.observe(document.body, { childList: true, subtree: true });
 } else {
@@ -23,63 +35,86 @@ const scanInterval = setInterval(() => {
   checkForNewMessages();
 }, 1000);
 
-// Respond to ping from popup with immediate reply
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === "PING") {
-    sendResponse({botReady: true, timestamp: Date.now()});
-    // Don't return true - immediate sync response
-  }
-  return false;
-});
-
 setTimeout(() => {
-  logDebug('Bot ready - active on current tab');
-}, 1000);
+  logDebug('Bot ready - scanning for messages every 1s');
+}, 2000);
 
 function checkForNewMessages() {
+  if (isTyping) return;
+  
   try {
-    // Find message content spans - these contain actual text
-    const messageSpans = document.querySelectorAll('span[data-lexical-text="true"]');
+    // Use the same selectors that worked
+    const candidates = document.querySelectorAll('div[data-testid="message-content"], span[data-lexical-text="true"]');
     
-    if (messageSpans.length === 0) return;
+    let newMessages = [];
     
-    // Check multiple recent messages
-    const recentSpans = Array.from(messageSpans).slice(-5);
-    
-    recentSpans.forEach(span => {
-      const messageText = span.textContent.trim();
+    candidates.forEach(el => {
+      const text = el.textContent.trim();
+      if (text.length === 0 || text.length > 200) return;
       
-      if (!messageText || messageText.length < 3) return;
+      // Skip our own messages to prevent feedback loop
+      if (text === lastSentMessage || text.includes(lastSentMessage.substring(0, 20))) {
+        return;
+      }
       
-      // Filter out system/UI text
+      // Additional check: look for outgoing message indicators
+      const isInOutgoingBubble = el.closest('[data-testid="message-content"]')?.parentElement?.className?.includes('outgoing') ||
+                                el.closest('[data-testid="MessageGroupOutgoing"]') ||
+                                el.closest('.message-out');
+      
+      if (isInOutgoingBubble) {
+        return; // Skip our own outgoing messages
+      }
+      
+      // Clean up message text - remove timestamp patterns
+      let messageContent = text
+        .replace(/^(At\s+)?\d{1,2}:\d{2}\s*(AM|PM)\s*(,\s*)?/i, '')
+        .replace(/\s*(PM|AM)\s*(by\s+)?\w+:\s*/i, '')
+        .trim();
+      
+      // Skip empty, UI elements, and system messages
+      const lowerText = messageContent.toLowerCase();
+      
       const skipPhrases = [
         'press enter', 'send', 'emoji', 'sticker', 'attach photo', 'attach file',
         'aa', 'reply to', 'message sent', 'what do you mean',
-        'type a message', 'click to open', 'notifications', 'type to search',
-        'online', 'active now', 'active today', 'typing'
+        'settings', 'info', 'call', 'video', 'gif', 'photo', 'like',
+        'enter', 'message', 'type a message', 'click to open',
+        'notifications', 'privacy', 'groups', 'friends', 'memories',
+        'watch', 'marketplace', 'gaming', 'pages', 'logout'
       ];
       
-      const lowerText = messageText.toLowerCase();
       if (skipPhrases.some(phrase => lowerText.includes(phrase))) return;
       
-      // Skip if this is our own message
-      if (messageText === lastSentMessage) return;
+      if (messageContent.length < 3) return;
       
-      // Unique key for deduplication
-      const messageKey = messageText + span.offsetTop + span.offsetLeft;
-      
-      if (!processedMessages.has(messageKey)) {
-        processedMessages.add(messageKey);
-        logDebug('Message: "' + messageText + '"');
-        handleTrigger(messageText);
-        
-        if (processedMessages.size > 100) {
-          processedMessages.clear();
-        }
-      }
+      newMessages.push({text: messageContent, originalText: text, id: messageContent + text});
     });
     
+    // Process only the latest new messages (last 3)
+    for (let i = newMessages.length - 1; i >= 0 && (newMessages.length - i) <= 3; i--) {
+      const msg = newMessages[i];
+      if (!processedMessages.has(msg.id)) {
+        processedMessages.add(msg.id);
+        logDebug('Message detected: "' + msg.text + '"');
+        handleTrigger(msg.text);
+      }
+    }
+    
+    if (processedMessages.size > 50) {
+      processedMessages.clear();
+    }
+    
   } catch (error) {
+    logDebug('Scan error: ' + error.message.substring(0, 100));
+  }
+}
+
+function logDebug(msg) {
+  console.log('[School GC Bot] ' + msg);
+  try {
+    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
+  } catch (e) {
     // Silent fail
   }
 }
@@ -87,51 +122,54 @@ function checkForNewMessages() {
 function handleTrigger(messageText) {
   const lowerText = messageText.toLowerCase().trim();
   
-  // Trigger on partial or full match (>=2 words matched)
-  const triggers = [
-    { pattern: 'happy birthday', response: '🎉 Happy Birthday! Have a great day!' },
-    { pattern: 'hello', response: '👋 Hey there!' },
-    { pattern: 'hi', response: '👋 Hello!' },
-    { pattern: 'class today', response: 'Checking... Please wait.' }
-  ];
+  logDebug('Checking trigger for: "' + lowerText + '"');
   
-  for (const trigger of triggers) {
-    if (lowerText.includes(trigger.pattern)) {
-      logDebug('Trigger matched: ' + trigger.pattern);
-      lastSentMessage = trigger.response;
-      sendAutoReply(trigger.response);
-      return;
-    }
+  // Keep the simple, working trigger logic
+  if (lowerText.includes('happy birthday')) {
+    logDebug('Trigger matched - replying');
+    const reply = '🎉 Happy Birthday! Have a great day!';
+    lastSentMessage = reply;
+    sendAutoReply(reply);
+    return;
   }
   
-  logDebug('No match: ' + lowerText);
+  logDebug('No trigger match for: ' + lowerText);
 }
 
 function findInputBox() {
   return (
+    document.querySelector('div[data-lexical-editor="true"][contenteditable="true"][aria-label*="Write"]') ||
+    document.querySelector('div[contenteditable="true"][role="textbox"][aria-label*="Write"]') ||
     document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-    document.querySelector('div[data-lexical-editor="true"]')
+    document.querySelector('div[data-lexical-editor="true"][contenteditable="true"]') ||
+    document.querySelector('div[contenteditable="true"][aria-label*="message"]') ||
+    document.querySelector('div[contenteditable="true"][aria-label*="chat"]')
   );
 }
 
 function findSendButton() {
   return (
-    document.querySelector('div[data-testid="send-button"]') ||
-    document.querySelector('button[aria-label="Send"]')
+    document.querySelector('div[data-testid="send-button"]') ||  
+    document.querySelector('button[aria-label="Send"]') ||
+    document.querySelector('div[aria-label="Send"]') ||
+    document.querySelector('i[data-testid="send-message-icon"]') ||
+    document.querySelector('div[role="button"][aria-label="Send"]')
   );
 }
 
 function simulateTyping(text, callback) {
+  isTyping = true;
+  
   const inputBox = findInputBox();
   if (!inputBox) {
     logDebug('Input box not found!');
+    isTyping = false;
     return;
   }
 
   logDebug('Found input - typing...');
   inputBox.focus();
 
-  // Clear existing content
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
 
@@ -139,25 +177,26 @@ function simulateTyping(text, callback) {
   const interval = setInterval(() => {
     if (i < text.length) {
       document.execCommand('insertText', false, text[i]);
+      inputBox.dispatchEvent(new InputEvent('input', { bubbles: true }));
       i++;
     } else {
       clearInterval(interval);
       logDebug('Typing done');
+      isTyping = false;
       if (callback) callback();
     }
-  }, 150 + Math.random() * 300);
+  }, 100 + Math.random() * 1900);
 }
 
 function sendAutoReply(responseText) {
-  logDebug('Sending: ' + responseText.substring(0, 50));
-  
+  logDebug('Starting reply...');
   simulateTyping(responseText, () => {
     let sent = false;
     
     const sendButton = findSendButton();
     if (sendButton) {
       sendButton.click();
-      logDebug('Sent!');
+      logDebug('Reply sent via button!');
       sent = true;
     }
     
@@ -170,22 +209,13 @@ function sendAutoReply(responseText) {
           bubbles: true
         });
         inputBox.dispatchEvent(enterEvent);
-        logDebug('Sent via Enter');
+        logDebug('Reply sent via Enter key');
         sent = true;
       }
     }
     
     if (!sent) {
-      logDebug('All send methods failed!');
+      logDebug('Failed to send reply!');
     }
   });
-}
-
-function logDebug(msg) {
-  console.log('[School GC Bot] ' + msg);
-  try {
-    chrome.runtime.sendMessage({type: 'DEBUG_LOG', message: msg});
-  } catch (e) {
-    // Silent fail
-  }
 }
