@@ -13,7 +13,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.botStopped) {
     botStopped = !!changes.botStopped.newValue;
     logDebug(botStopped ? '⏹ Bot stopped' : '▶ Bot started');
-    if (botStopped) stopTyping();
+    if (botStopped) {
+      stopTyping();
+      if (eventSource) { eventSource.close(); eventSource = null; }
+    } else {
+      startStream();
+    }
   }
 });
 
@@ -95,8 +100,38 @@ setInterval(() => {
   checkForNewMessages();
 }, 5000);
 
+// SSE stream: webapp pushes reminders/responses proactively
+let eventSource = null;
+
+function startStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  const chatId = getChatId();
+  if (!chatId) return;
+  eventSource = new EventSource(`${RELAY_URL.replace('/relay', '')}/stream?chat_id=${chatId}`);
+  eventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.text && !botStopped) {
+        logDebug('📨 Stream push: ' + data.text);
+        lastSentMessage = data.text;
+        sendAutoReply(data.text);
+      }
+    } catch (err) {
+      logDebug('⚠️ Stream parse error: ' + (err && err.message ? err.message : err));
+    }
+  };
+  eventSource.onerror = () => {
+    logDebug('⚠️ Stream disconnected — will retry automatically');
+  };
+  logDebug('📡 SSE stream connected');
+}
+
 setTimeout(() => {
   logDebug('Bot ready - monitoring for messages');
+  if (!botStopped) startStream();
 }, 2000);
 
 function checkForNewMessages() {
